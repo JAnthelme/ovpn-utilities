@@ -23,7 +23,7 @@ import System.IO (stderr, hPutStrLn)
 import Control.Monad (when)
 import Data.List (nub)
 
--- import Control.Monad.Writer
+-- TODO : add possibility to change cpCFGdir = "/etc/NetworkManager/system-connections"
 
 -----------------------
 -- arguments / commands management
@@ -56,10 +56,26 @@ data ConfigParams = ConfigParams
     , cpCipher :: String
     , cpIP     :: String
     , cpPort   :: String
+    , cpProt   :: String
     , cpCAfp   :: String
     , cpCRfp   :: String
     , cpKYfp   :: String
+    , cpCFGdir :: String
     } deriving Show
+
+defConfigParams = ConfigParams
+    { cpID     = ""
+    , cpUUID   = ""
+    , cpAuth   = ""
+    , cpCipher = ""
+    , cpIP     = ""
+    , cpPort   = ""
+    , cpProt   = ""
+    , cpCAfp   = ""
+    , cpCRfp   = ""
+    , cpKYfp   = ""
+    , cpCFGdir = "/etc/NetworkManager/system-connections"
+    }
 
 data Command
         = Extract               -- extract certificate details and save to files (.cert, .ca, .key)
@@ -131,15 +147,14 @@ doJobs (args, files, cmd) = do
     -- extract details and create a config file
     when (cmd == Config) $ doConfig args fn' content
 
-
-
 -- extract details and create a config file
 doConfig :: Options -> FilePath -> ByteString -> IO ()
 doConfig args fn' content = do 
     let auth'   = maperr1 "auth" $ A.parseOnly pAuth content
         ciph'   = maperr1 "cipher" $ A.parseOnly pCiph content
         remo'   = maperr1 "remote" $ A.parseOnly pIP content
-        errs    = lefts [auth', ciph'] ++ lefts [remo']
+        proto'  = maperr1 "proto" $ A.parseOnly pProto content
+        errs    = lefts [auth', ciph', proto'] ++ lefts [remo']
 
     if errs /= []
       then do
@@ -149,19 +164,21 @@ doConfig args fn' content = do
         cpuuid <- UUID.toString <$> nextRandom
         let Right auth      = auth'
             Right ciph      = ciph'
+            Right proto     = proto'
             Right (ip,port) = remo'
-            cpid   = "vpn_gate_" ++ ip ++ "_" ++ port ++ "_TEST"
-            -- cpuuid = "336cbc40-b42e-44c0-ba7e-6d76a1716710"
+            cpid   = "vpn_gate_" ++ ip ++ "_" ++ proto ++ "_" ++ port ++ "_TEST"
             (fpca, fpcr, fpky) = certfilesnms fn'
-            cp = ConfigParams {cpID = cpid, cpUUID = cpuuid, cpAuth = auth, cpCipher = ciph, cpIP = ip, cpPort = port
-                              , cpCAfp = fpca, cpCRfp = fpcr, cpKYfp = fpky}
-        
+            cp = defConfigParams {cpID = cpid, cpUUID = cpuuid
+                                 , cpAuth = auth, cpCipher = ciph, cpIP = ip, cpPort = port, cpProt = proto
+                                 , cpCAfp = fpca, cpCRfp = fpcr, cpKYfp = fpky
+                                 }
             
         if optVerbose args then do
                     hPutStrLn stderr ("auth: " ++ auth)
                     hPutStrLn stderr ("cipher: " ++ ciph)
                     hPutStrLn stderr ("IP: " ++ ip)
                     hPutStrLn stderr ("port: " ++ port)
+                    hPutStrLn stderr ("proto: " ++ proto)
                     hPutStrLn stderr ("\nfile output:\n" ++ confStr cp)
                     -- hPutStrLn stderr ("\nall saved in:\n" ++ fpca ++ "\n" ++ fpcr ++ "\n" ++ fpky)
            else return()
@@ -170,20 +187,25 @@ doConfig args fn' content = do
 -- extract ca, cert and key strings and store them in .ca, .cert, .key files
 doExtract :: Options -> FilePath -> ByteString -> IO ()
 doExtract args fn' content = do
-    let ca'   = A.parseOnly (grab ca_prms) content
-        cert' = A.parseOnly (grab cert_prms) content
-        key'  = A.parseOnly (grab key_prms) content
-        errheader = map (\s -> "Error: could not find \'" ++ s ++ "\' data") ["ca","cert","key"]
-        errcheck  = checkResults errheader [ca',cert',key']
+    let ca'   = maperr1 "ca" $ A.parseOnly (grab ca_prms) content
+        cert' = maperr1 "cert" $ A.parseOnly (grab cert_prms) content
+        key'  = maperr1 "key" $ A.parseOnly (grab key_prms) content
+        errs   = lefts [ca', cert', key']
+        -- errheader = map (\s -> "Error: could not find \'" ++ s ++ "\' data") ["ca","cert","key"]
+        -- errcheck  = checkResults errheader [ca',cert',key']
 
-    if errcheck /= []
+    if errs /= []
       then do
-        putStrLn $ concat errcheck
+        putStrLn $ "Error: " ++ (concat errs)
         exitWith (ExitFailure 1)
-    else do let ca:cert:key:xs =  getResults [ca',cert',key']
-                fpca = fn' -<.> "ca"
-                fpcr = fn' -<.> ".cert"
-                fpky = fn' -<.> ".key"
+    -- else do let ca:cert:key:xs =  getResults [ca',cert',key']
+    else do let Right ca   = ca'
+                Right cert = cert'
+                Right key  = key'
+                (fpca, fpcr, fpky) = certfilesnms fn'
+                -- fpca = fn' -<.> "ca"
+                -- fpcr = fn' -<.> ".cert"
+                -- fpky = fn' -<.> ".key"
 
             if optVerbose args then do
                     hPutStrLn stderr ("\nca string:\n" ++ ca)
@@ -195,12 +217,10 @@ doExtract args fn' content = do
             writeFile fpca ca
             writeFile fpcr cert
             writeFile fpky key
-{-
-fromParser :: Either String String -> IO (Bool, String)
-fromParser p = case p of
-    Left x  -> return (True, x)
-    Right y -> return (False, y)
--}
+
+----------------------
+-- argument management
+----------------------
 
 options :: [OptDescr (Options -> Options)]
 options =
@@ -245,7 +265,6 @@ compilerOpts argv =
      (_,_,errs) -> ioError (userError (concat errs ++ usageInfo header options))
  where header = "Usage: ovpn [COMMAND...] FILE [OPTION...]"
 
-
 ----------------------
 -- parser functions
 ----------------------
@@ -261,7 +280,6 @@ grab prms = do
 
 foldmsg :: String -> (String, (Bool, String)) -> String
 foldmsg = \m' (tag,(e,m)) -> if e then m' ++ "/" ++ tag ++ m else m'
-
 
 pSimple :: String -> Parser String
 pSimple s = do
@@ -279,6 +297,9 @@ pAuth = pSimple "auth"
 pCiph :: Parser String
 pCiph = pSimple "cipher"
 
+-- | parse what comes after the "proto" line
+pProto :: Parser String
+pProto = pSimple "proto"
 
 -- | return (IP, Port) from "bla remote 255.1.23.255 1234 bla\n" type strings
 pIP :: Parser (String, String)
@@ -296,14 +317,6 @@ pIP = do
 ----------------------
 -- argtest
 ----------------------
-foo :: IO ()
-foo  = do
-        bar <- getArgs
-        putStrLn $ show bar
-
-
--- cpID = cpid, cpUUID = cpuuid, cpAuth = auth, cpCipher = ciph, cpIP = ip, cpPort = port
-   --                           , cpCAfp = fpca, cpCRfp = fpcr, cpKYfp = fpky
 
 confStr :: ConfigParams -> String
 confStr cp =
@@ -330,27 +343,15 @@ confStr cp =
     \[ipv4]\n\
     \method=auto"
 
-
 ----------------------
 -- local question
 ----------------------
-checkResults :: [String] -> [Either String a] -> [String]
-checkResults lbls res = map g $ filter (isLeft . snd) $ zip lbls res
-    where -- f = isLeft . snd
-          -- f (_, Left _)  = True
-          -- f (_, Right _) = False
-          g (s, Left e)  = s ++ ": " ++ e
-          g (s, Right _) = ""
-
-getResults :: [Either String a] -> [a]
-getResults res = concatMap f res
-    where f (Left  x)  = []
-          f (Right x)  = [x]
-
+-- needed to improve the error messages sent by ParseOnly
 mapLeft :: (a -> b) -> Either a c -> Either b c
 mapLeft f (Left x)  = Left $ f x
 mapLeft _ (Right x) = Right x
 
+-- error msg template
 errmap1 :: String -> (a -> String)
 errmap1 s = const $ "Couldn't find '" ++ s ++ "' details. "
 
@@ -358,60 +359,3 @@ maperr1 s = mapLeft $ errmap1 s
 
 certfilesnms :: String -> (String, String, String)
 certfilesnms fn' = (fn' -<.> "ca", fn' -<.> ".cert", fn' -<.> ".key")
-
-{-
-main2 :: IO ()
-main2 = do
-    xxx <- getArgs
-    -- (args, files) <- getArgs >>= parse
-    (args, files, cmd) <- getArgs >>= compilerOpts
-
-    putStrLn $ "getArgs: " ++ (show xxx)
-    putStrLn $ "parsed: " ++ (show (args, files, cmd))
-    let fn  = head files -- should be safe...
-        fn' = fromMaybe fn $ optRename args
-    content <- S.pack <$> readFile fn
-    -- parse tag-delimited keys
-    let ca'   = A.parseOnly (grab ca_prms) content
-        cert' = A.parseOnly (grab cert_prms) content
-        key'  = A.parseOnly (grab key_prms) content
-    -- manage potential errors
-    (errca, ca) <- case ca' of
-                 Left x  -> return (True, x)
-                 Right y -> return (False, y)
-    (errcert, cert) <- case cert' of
-                 Left x  -> return (True, x)
-                 Right y -> return (False, y)
-    (errkey, key) <- case key' of
-                 Left x  -> return (True, x)
-                 Right y -> return (False, y)
-
-    let errmsg = foldl foldmsg "" $ zip ["ca:","cert:","key:"]
-                                        [(errca, ca)
-                                        ,(errcert, cert)
-                                        ,(errkey, key)]
-
-    if errca || errcert || errkey
-      then do
-        print errmsg
-        exitWith (ExitFailure 1)
-    else do if optVerbose args then do
-                    hPutStrLn stderr ("ca string:\n" ++ ca)
-                    hPutStrLn stderr ("cert string:\n" ++ cert)
-                    hPutStrLn stderr ("key string:\n" ++ key)
-                    hPutStrLn stderr ("source: " ++ fn)
-                    hPutStrLn stderr ("dest: " ++ fn')
-                    hPutStrLn stderr ("args: " ++ show (args, files))
-                    else return()
-
-            writeFile (fn' -<.> "ca") ca
-            writeFile (fn' -<.> ".cert") cert
-            writeFile (fn' -<.> ".key") key
-    return ()
-
--}
-
-
-
-
-

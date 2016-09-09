@@ -28,6 +28,10 @@ ovpn somefile.ovpn -r /someotherdir/someothername
 ```
 ... same as above but save to `/someotherdir/someothername.ca`, `/someotherdir/someothername.cert` and `/someotherdir/someothername.key`.
 
+:main config vpnTEST.ovpn  -v
+:main extract vpnTEST.ovpn  -v
+
+
 ## Documentation
 From the command line:
 ```sh
