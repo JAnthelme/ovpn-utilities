@@ -14,7 +14,7 @@ cd ovpn-utilities
 stack build
 ```
 
-Copy the executable (typically from `.stack-work/dist/x86_64-linux/Cabal-1.22.5.0/build/ovpn/ovpn`) to the directory of your choice, ideally present in your `$PATH`, eg `~/.local/bin`. 
+Copy the executable (typically `.stack-work/dist/x86_64-linux/Cabal-1.22.5.0/build/ovpn/ovpn`) to the directory of your choice, ideally present in your `$PATH`, eg `~/.local/bin`. 
 
 ## Getting started
 From the command line:
