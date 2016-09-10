@@ -143,29 +143,22 @@ main = getArgs >>= compilerOpts >>= doJobs
 
 doJobs :: (Options, [FilePath], Command) -> IO ()
 doJobs (args, files, cmd) = do
-    putStrLn $ "FILES: " ++ (show files)
-    -- putStrLn $ "parsed: " ++ (show (args, files, cmd))
-    let fn  = head files -- should be safe...
-        -- fn' = fromMaybe fn $ optRename args
-        -- fn' = fromMaybe fn $ (replacepath fn) <$> optRename args
-    
-    -- content <- S.pack <$> readFile fn
-    when (takeFileName fn /= "") $ doOneJob args fn cmd
+    -- head should be safe as compilerOpts fails otherwise
+    -- resolve ambibuity if filepath is "." by replacing by "./"
+    let fp = let fp' = head files in if fp' == "." then "./" else fp'
+
+    when (takeFileName fp /= "") $ doOneJob args fp cmd
     
     -- if the filepath is a directory, then apply the command to all .ovpn files in this directory
-    when (isDirectory fn) $ do
-        fps <- filter (\p -> takeExtension p == ".ovpn") <$> getDirectoryContents fn
+    when (isDirectory fp) $ do
+        fps <- filter (\p -> takeExtension p == ".ovpn") <$> getDirectoryContents fp
         putStrLn $ "FPS: " ++ (show fps)
         if fps == []
           then do
-            putStrLn $ "Error: No .ovpn files in " ++ fn ++ " directory."
+            putStrLn $ "Error: No .ovpn files in " ++ fp ++ " directory."
             exitWith (ExitFailure 1)        
         else
             mapM_ (\p -> doOneJob args p cmd) fps
-            
-
-    
-    --- return()
 
 doOneJob :: Options -> FilePath -> Command -> IO ()
 doOneJob args fn cmd = do
@@ -178,8 +171,6 @@ doOneJob args fn cmd = do
 
     -- extract details and create a config file
     when (cmd == Config) $ doConfig args fn' content
-
-
 
 -- extract details and create a config file
 doConfig :: Options -> FilePath -> ByteString -> IO ()
@@ -274,10 +265,11 @@ options =
     [ Option ['h','?'] ["help"]    (NoArg (\ opts -> opts { optHelp = True }))                                      "print this help message."
     , Option ['v']     ["verbose"] (NoArg (\ opts -> opts { optVerbose = True }))                                   "chatty output on stderr."
     , Option []        ["version"] (NoArg (\ opts -> opts { optShowVersion = True }))                               "show version number."
-    , Option ['r']     ["rename"]  (ReqArg (\ fn opts -> opts { optRename = Just fn }) "DIR")                       "rename the output files."
+    , Option ['r']     ["rename"]  (ReqArg (\ fn opts -> opts { optRename = Just fn }) "PATH")                       "rename the output files."
+{-    
     , Option ['o']     ["output"]  (OptArg ((\ f opts -> opts { optOutput = Just f }) . fromMaybe "output") "FILE") "output FILE"
     , Option ['c']     []          (OptArg ((\ f opts -> opts { optInput = Just f }) . fromMaybe "input") "FILE")   "input FILE"
-    , Option ['L']     ["libdir"]  (ReqArg (\ d opts -> opts { optLibDirs = optLibDirs opts ++ [d] }) "DIR")        "library directory"
+    , Option ['L']     ["libdir"]  (ReqArg (\ d opts -> opts { optLibDirs = optLibDirs opts ++ [d] }) "DIR")        "library directory" -}
     ]
 
 compilerOpts :: [String] -> IO (Options, [String], Command)
@@ -406,6 +398,7 @@ maperr1 s = mapLeft $ errmap1 s
 certfilesnms :: String -> [String]
 certfilesnms fn = map (fn -<.>) ["ca", ".cert", ".key"]
 
+-- FIXME : check what happen if fp1 or fp2 are "."
 replacepath :: FilePath -> FilePath -> FilePath
 replacepath fp1 fp2 = dir2 </> fn2
     where dir1 = takeDirectory fp1
