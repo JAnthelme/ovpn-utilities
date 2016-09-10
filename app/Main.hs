@@ -7,10 +7,14 @@ import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A (parseOnly, manyTill, anyChar, string, endOfLine, eitherP, endOfInput, sepBy1, many1, digit, char)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as S (pack)
-import System.FilePath.Posix ((-<.>))
-import Data.List (uncons, intersperse)
+
+import Data.List (uncons, intersperse, isPrefixOf)
 import Data.Either (isLeft, lefts)
 import Data.Maybe (fromMaybe)
+
+import System.FilePath.Posix ((-<.>), (</>), takeDirectory, takeFileName, takeExtension)
+import System.Directory (makeAbsolute, doesFileExist, getDirectoryContents)
+import System.Posix.Files (nullFileMode, ownerReadMode, ownerWriteMode, unionFileModes, setFileMode)
 
 import System.Console.GetOpt
 import System.Environment
@@ -24,6 +28,9 @@ import Control.Monad (when)
 import Data.List (nub)
 
 -- TODO : add possibility to change cpCFGdir = "/etc/NetworkManager/system-connections"
+-- TODO : change options
+-- TODO : split config into config and make
+
 
 -----------------------
 -- arguments / commands management
@@ -51,7 +58,7 @@ defaultOptions = Options
 
 data ConfigParams = ConfigParams
     { cpID     :: String
-    , cpUUID   :: String    
+    , cpUUID   :: String
     , cpAuth   :: String
     , cpCipher :: String
     , cpIP     :: String
@@ -79,7 +86,7 @@ defConfigParams = ConfigParams
 
 data Command
         = Extract               -- extract certificate details and save to files (.cert, .ca, .key)
-        | Config                -- make configuration file and save to file 
+        | Config                -- make configuration file and save to file
         | Nil                   -- no command
         deriving (Eq,Ord,Show)
 
@@ -136,43 +143,81 @@ main = getArgs >>= compilerOpts >>= doJobs
 
 doJobs :: (Options, [FilePath], Command) -> IO ()
 doJobs (args, files, cmd) = do
+    putStrLn $ "FILES: " ++ (show files)
     -- putStrLn $ "parsed: " ++ (show (args, files, cmd))
     let fn  = head files -- should be safe...
-        fn' = fromMaybe fn $ optRename args
+        -- fn' = fromMaybe fn $ optRename args
+        -- fn' = fromMaybe fn $ (replacepath fn) <$> optRename args
+    
+    -- content <- S.pack <$> readFile fn
+    when (takeFileName fn /= "") $ doOneJob args fn cmd
+    
+    -- if the filepath is a directory, then apply the command to all .ovpn files in this directory
+    when (isDirectory fn) $ do
+        fps <- filter (\p -> takeExtension p == ".ovpn") <$> getDirectoryContents fn
+        putStrLn $ "FPS: " ++ (show fps)
+        if fps == []
+          then do
+            putStrLn $ "Error: No .ovpn files in " ++ fn ++ " directory."
+            exitWith (ExitFailure 1)        
+        else
+            mapM_ (\p -> doOneJob args p cmd) fps
+            
+
+    
+    --- return()
+
+doOneJob :: Options -> FilePath -> Command -> IO ()
+doOneJob args fn cmd = do
+    putStrLn $ "FILES2: " ++ (show fn)
+    let fn' = fromMaybe fn $ (replacepath fn) <$> optRename args
     content <- S.pack <$> readFile fn
 
     -- extract and save cert files
     when (cmd == Extract) $ doExtract args fn' content
-    
+
     -- extract details and create a config file
     when (cmd == Config) $ doConfig args fn' content
 
+
+
 -- extract details and create a config file
 doConfig :: Options -> FilePath -> ByteString -> IO ()
-doConfig args fn' content = do 
+doConfig args fn' content = do
+    certfilestest <- filter not <$> (mapM doesFileExist $ certfilesnms fn')
+    
+    -- if cert files aren't there, create them
+    if certfilestest == [] then return () else doExtract args fn' content
+    
+    -- cert files absolute paths
+    fpca:fpcr:fpky:xs <- mapM makeAbsolute $ certfilesnms fn'  
+    
+    -- parse ovpn file for relevant details
     let auth'   = maperr1 "auth" $ A.parseOnly pAuth content
         ciph'   = maperr1 "cipher" $ A.parseOnly pCiph content
         remo'   = maperr1 "remote" $ A.parseOnly pIP content
         proto'  = maperr1 "proto" $ A.parseOnly pProto content
         errs    = lefts [auth', ciph', proto'] ++ lefts [remo']
-
+    
+    -- exit in case error in parsing details
     if errs /= []
       then do
         putStrLn $ "Error: " ++ (concat errs)
         exitWith (ExitFailure 1)
+
     else do
         cpuuid <- UUID.toString <$> nextRandom
         let Right auth      = auth'
             Right ciph      = ciph'
             Right proto     = proto'
             Right (ip,port) = remo'
-            cpid   = "vpn_gate_" ++ ip ++ "_" ++ proto ++ "_" ++ port ++ "_TEST"
-            (fpca, fpcr, fpky) = certfilesnms fn'
-            cp = defConfigParams {cpID = cpid, cpUUID = cpuuid
+            cpid   = fn' -- "vpn_gate_" ++ ip ++ "_" ++ proto ++ "_" ++ port ++ "_TEST"
+        
+        let cp = defConfigParams { cpID = cpid, cpUUID = cpuuid
                                  , cpAuth = auth, cpCipher = ciph, cpIP = ip, cpPort = port, cpProt = proto
                                  , cpCAfp = fpca, cpCRfp = fpcr, cpKYfp = fpky
                                  }
-            
+
         if optVerbose args then do
                     hPutStrLn stderr ("auth: " ++ auth)
                     hPutStrLn stderr ("cipher: " ++ ciph)
@@ -182,6 +227,13 @@ doConfig args fn' content = do
                     hPutStrLn stderr ("\nfile output:\n" ++ confStr cp)
                     -- hPutStrLn stderr ("\nall saved in:\n" ++ fpca ++ "\n" ++ fpcr ++ "\n" ++ fpky)
            else return()
+        
+        -- saving config file
+        let fp = cpCFGdir cp </> cpID cp
+        writeFile fp $ confStr cp
+        -- NetworkManager requires no permission for group and others
+        sequence $ map (setFileMode fp) [nullFileMode, unionFileModes ownerReadMode ownerWriteMode]
+        
     return ()
 
 -- extract ca, cert and key strings and store them in .ca, .cert, .key files
@@ -191,21 +243,16 @@ doExtract args fn' content = do
         cert' = maperr1 "cert" $ A.parseOnly (grab cert_prms) content
         key'  = maperr1 "key" $ A.parseOnly (grab key_prms) content
         errs   = lefts [ca', cert', key']
-        -- errheader = map (\s -> "Error: could not find \'" ++ s ++ "\' data") ["ca","cert","key"]
-        -- errcheck  = checkResults errheader [ca',cert',key']
 
     if errs /= []
       then do
         putStrLn $ "Error: " ++ (concat errs)
         exitWith (ExitFailure 1)
-    -- else do let ca:cert:key:xs =  getResults [ca',cert',key']
+
     else do let Right ca   = ca'
                 Right cert = cert'
                 Right key  = key'
-                (fpca, fpcr, fpky) = certfilesnms fn'
-                -- fpca = fn' -<.> "ca"
-                -- fpcr = fn' -<.> ".cert"
-                -- fpky = fn' -<.> ".key"
+                fpca:fpcr:fpky:xs = certfilesnms fn'
 
             if optVerbose args then do
                     hPutStrLn stderr ("\nca string:\n" ++ ca)
@@ -227,7 +274,7 @@ options =
     [ Option ['h','?'] ["help"]    (NoArg (\ opts -> opts { optHelp = True }))                                      "print this help message."
     , Option ['v']     ["verbose"] (NoArg (\ opts -> opts { optVerbose = True }))                                   "chatty output on stderr."
     , Option []        ["version"] (NoArg (\ opts -> opts { optShowVersion = True }))                               "show version number."
-    , Option ['r']     ["rename"]  (ReqArg (\ fn opts -> opts { optRename = Just fn }) "DIR")                       "rename the output file"
+    , Option ['r']     ["rename"]  (ReqArg (\ fn opts -> opts { optRename = Just fn }) "DIR")                       "rename the output files."
     , Option ['o']     ["output"]  (OptArg ((\ f opts -> opts { optOutput = Just f }) . fromMaybe "output") "FILE") "output FILE"
     , Option ['c']     []          (OptArg ((\ f opts -> opts { optInput = Just f }) . fromMaybe "input") "FILE")   "input FILE"
     , Option ['L']     ["libdir"]  (ReqArg (\ d opts -> opts { optLibDirs = optLibDirs opts ++ [d] }) "DIR")        "library directory"
@@ -307,7 +354,6 @@ pIP = do
     A.manyTill A.anyChar $ do A.endOfLine   -- FIXME : should add an alternative if the key string is at the begining of the file
                               A.string $ "remote"
                               A.many1 (A.char ' ')
-    -- A.many1 (A.char ' ')
     x <- A.sepBy1 (A.many1 A.digit) (A.char '.')
     A.many1 (A.char ' ')
     y <- A.manyTill (A.digit) $ A.eitherP A.endOfLine A.endOfInput
@@ -357,5 +403,26 @@ errmap1 s = const $ "Couldn't find '" ++ s ++ "' details. "
 
 maperr1 s = mapLeft $ errmap1 s
 
-certfilesnms :: String -> (String, String, String)
-certfilesnms fn' = (fn' -<.> "ca", fn' -<.> ".cert", fn' -<.> ".key")
+certfilesnms :: String -> [String]
+certfilesnms fn = map (fn -<.>) ["ca", ".cert", ".key"]
+
+replacepath :: FilePath -> FilePath -> FilePath
+replacepath fp1 fp2 = dir2 </> fn2
+    where dir1 = takeDirectory fp1
+          fn1  = takeFileName fp1
+          dir2 = let d2 = takeDirectory fp2 in if d2 == "." && (not $ d2 `isPrefixOf` fp2) then dir1 else d2
+          fn2  = let f2 = takeFileName fp2 in if f2 == "" then fn1 else f2
+
+-- hasDirectory "foo" is False, hasDirectory "./foo", "./foo/" "./bar/foo", etc are True
+hasDirectory :: FilePath -> Bool
+hasDirectory fp = let d = takeDirectory fp in if d == "." && (not $ d `isPrefixOf` fp) then False else True
+
+isDirectory :: FilePath -> Bool
+isDirectory fp = hasDirectory fp && takeFileName fp == ""
+
+
+
+
+
+
+
