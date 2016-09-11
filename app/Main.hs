@@ -30,7 +30,7 @@ import Data.List (nub)
 -- TODO : add possibility to change cpCFGdir = "/etc/NetworkManager/system-connections"
 -- TODO : change options
 -- TODO : split config into config and make
-
+-- TODO : check if /etc/NetworkManager/system-connections/file exists before overridding it (it screws up Network Manager)
 
 -----------------------
 -- arguments / commands management

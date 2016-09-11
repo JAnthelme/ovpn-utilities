@@ -19,17 +19,14 @@ Copy the executable (typically `.stack-work/dist/x86_64-linux/Cabal-1.22.5.0/bui
 ## Getting started
 From the command line:
 ```sh
-ovpn somefile.ovpn
+sudo ovpn config somedir/somefile.ovpn
 ```
-... will extract the relevant data from `somefile.ovpn` and save them to `somefile.ca`, `somefile.cert`, `somefile.key` in the current directory.
+... will parse a given ovpn file, `somedir/somefile.ovpn`, and save a corresponding config file in `/etc/NetworkManager/system-connections` (which is why the `sudo` command is needed).
 
 ```sh
-ovpn somefile.ovpn -r /someotherdir/someothername
+sudo ovpn config somedir/ -v
 ```
-... same as above but save to `/someotherdir/someothername.ca`, `/someotherdir/someothername.cert` and `/someotherdir/someothername.key`.
-
-:main config vpnTEST.ovpn  -v
-:main extract vpnTEST.ovpn  -v
+... same as above but with *all* `.ovpn` files in the directory provided.
 
 
 ## Documentation
